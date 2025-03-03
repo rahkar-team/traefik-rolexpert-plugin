@@ -1,0 +1,19 @@
+# The name of your plugin as displayed in the Plugins Catalog web UI.
+displayName: RoleXpert plugin
+
+# For now, `middleware` is the only type available.
+type: middleware
+
+# The import path of your plugin.
+import: github.com/rahkar-team/treafik-rolexpert-plugin
+
+# A brief description of what your plugin is doing.
+summary: It's going to verify given user's token then authorized them.
+
+# Configuration data for your plugin.
+# This is mandatory,
+# and Plugins Catalog will try to execute the plugin with the data you provide as part of its startup validity tests.
+testData:
+  clientId: "Add RoleXpert client id."
+  clientSecret: "Add RoleXpert client secret."
+  rolexpertBaseUrl: "Add RoleXpert base url."
