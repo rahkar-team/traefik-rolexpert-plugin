@@ -5,7 +5,7 @@ displayName: RoleXpert plugin
 type: middleware
 
 # The import path of your plugin.
-import: github.com/rahkar-team/treafik-rolexpert-plugin
+import: github.com/rahkar-team/traefik-rolexpert-plugin
 
 # A brief description of what your plugin is doing.
 summary: It's going to verify given user's token then authorized them.

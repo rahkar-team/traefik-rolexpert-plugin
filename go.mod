@@ -1,4 +1,4 @@
-module github.com/rahkar-team/treafik-rolexpert-plugin
+module github.com/rahkar-team/traefik-rolexpert-plugin
 
 go 1.23.6
 
