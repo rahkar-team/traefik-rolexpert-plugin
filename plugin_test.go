@@ -1,4 +1,4 @@
-package main
+package traefik_rolexpert_plugin
 
 import (
 	"crypto/rand"
