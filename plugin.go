@@ -29,7 +29,7 @@ type Config struct {
 	RoleXpertUrl  string      `json:"rolexpertBaseUrl"`
 	TraefikApiUrl string      `json:"traefikApiUrl"` // Traefik API URL
 	CacheTTL      int         `json:"cacheTTL"`      // Cache expiration in seconds
-	Whitelist     []Whitelist `json:"whitelist"`     // Plugin-defined whitelist
+	Whitelist     interface{} `json:"whitelist"`     // Plugin-defined whitelist
 }
 
 // Whitelist defines allowed paths and optional methods
@@ -61,6 +61,35 @@ type traefikPlugin struct {
 
 // New creates a new instance of the middleware plugin.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	var whitelist []Whitelist
+
+	switch v := config.Whitelist.(type) {
+	case string: // If whitelist is a JSON string, decode it
+		if err := json.Unmarshal([]byte(v), &whitelist); err != nil {
+			fmt.Printf("Failed to parse whitelist JSON: %v\n", err)
+		}
+	case []interface{}: // If it's already an array, cast it
+		for _, item := range v {
+			if wlMap, ok := item.(map[string]interface{}); ok {
+				wl := Whitelist{}
+				if path, exists := wlMap["path"].(string); exists {
+					wl.Path = path
+				}
+				if method, exists := wlMap["method"].(string); exists {
+					wl.Method = method
+				}
+				whitelist = append(whitelist, wl)
+			}
+		}
+	case nil:
+		fmt.Println("No whitelist provided.")
+	default:
+		fmt.Printf("Unexpected whitelist format: %T\n", v)
+	}
+
+	// Assign parsed whitelist
+	config.Whitelist = whitelist
+
 	client := NewClient(
 		config.ClientId,
 		config.ClientSecret,
@@ -205,7 +234,7 @@ func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
 	newWhitelist, err := a.FetchWhitelistFromTraefik(serviceHost)
 	if err != nil {
 		fmt.Printf("Warning: Failed to fetch whitelist from Traefik: %v\n", err)
-		return a.config.Whitelist // Default to plugin-defined whitelist
+		return a.config.Whitelist.([]Whitelist) // Default to plugin-defined whitelist
 	}
 
 	// Store in cache with expiration
