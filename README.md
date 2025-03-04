@@ -65,9 +65,9 @@ http:
           clientId: "ClientIdFake"
           clientSecret: "ClientSecretFake"
           rolexpertBaseUrl: "http://rolexpert:8080"
-          traefikApiUrl: "http://traefik:8080"   # 🔥 Configurable API URL
-          cacheTTL: 300  # 🔥 Cache whitelist for 5 minutes
-          whitelist: # 🔥 Plugin-defined whitelist
+          traefikApiUrl: "http://traefik:8080"   # Configurable API URL
+          cacheTTL: 300  # Cache whitelist for 5 minutes
+          whitelist: # Plugin-defined whitelist
             - path: "/public"
             - path: "/health"
               method: "GET"
@@ -168,14 +168,3 @@ Contributions are welcome! Follow these steps:
 ## License
 
 This project is licensed under the **Apache License 2.0**.
-
----
-
-## 🔥 **Final Summary**
-
-✔ **Updated README to reflect the new whitelist and caching features**.  
-✔ **Explained how services can define their own whitelist dynamically**.  
-✔ **Added `traefikApiUrl` & `cacheTTL` to allow better configuration**.  
-✔ **Clean, well-documented instructions for installation and usage**.
-
-🚀 Now, the **README** is fully aligned with the latest changes! Let me know if you need any tweaks! 😃
