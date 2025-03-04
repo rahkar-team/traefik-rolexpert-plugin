@@ -5,12 +5,16 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -20,14 +24,29 @@ const (
 
 // Config defines the middleware configuration.
 type Config struct {
-	ClientId     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
-	RoleXpertUrl string `json:"rolexpertBaseUrl"`
+	ClientId      string      `json:"clientId"`
+	ClientSecret  string      `json:"clientSecret"`
+	RoleXpertUrl  string      `json:"rolexpertBaseUrl"`
+	TraefikApiUrl string      `json:"traefikApiUrl"` // Traefik API URL
+	CacheTTL      int         `json:"cacheTTL"`      // Cache expiration in seconds
+	Whitelist     []Whitelist `json:"whitelist"`     // Plugin-defined whitelist
+}
+
+// Whitelist defines allowed paths and optional methods
+type Whitelist struct {
+	Path   string `json:"path"`
+	Method string `json:"method,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
-	return &Config{}
+	return &Config{
+		CacheTTL:      300,                   // Default to 5 minutes cache
+		TraefikApiUrl: "http://traefik:8080", // 🔥 Default Traefik API URL
+		Whitelist: []Whitelist{
+			{Path: "/health", Method: "GET"}, // 🔥 Default whitelist example
+		},
+	}
 }
 
 type traefikPlugin struct {
@@ -37,6 +56,7 @@ type traefikPlugin struct {
 	roleXpertClient Client
 	publicKey       []byte
 	rolePermissions map[string][]string
+	cache           sync.Map // 🔥 In-memory cache for whitelists
 }
 
 // New creates a new instance of the middleware plugin.
@@ -52,11 +72,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		name:            name,
 		config:          config,
 		roleXpertClient: client,
+		cache:           sync.Map{},
 	}, nil
 }
 
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// 🔥 Check if the request is whitelisted (from plugin or service)
+	if a.isWhitelisted(req) {
+		a.next.ServeHTTP(rw, req) // ✅ Skip authentication
+		return
+	}
+
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, BearerPrefix) {
 		http.Error(rw, "token invalid!", http.StatusUnauthorized)
@@ -88,12 +115,10 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Determine which roles (if any) authorize the request.
+	// Determine required roles for this request
 	var requiredRoles []string
-
 	for role, permissions := range rolesPermissions {
 		for _, permission := range permissions {
-			// Extract the HTTP method and BaseURL pattern
 			parts := strings.SplitN(permission, ":", 2)
 			if len(parts) != 2 {
 				continue
@@ -104,7 +129,6 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				continue
 			}
 
-			// Convert the permission pattern into a regular expression.
 			regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
 			regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
 			regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
@@ -117,13 +141,13 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	req.Header.Set(XAuthUserIdHeader, authUserId)
 
-	// If no roles are applicable for this request, allow it.
+	// If no roles are required, allow access
 	if len(requiredRoles) == 0 {
 		a.next.ServeHTTP(rw, req)
 		return
 	}
 
-	// Check if any of the user roles match the required roles.
+	// Check if user has a required role
 	for _, ur := range userRoles {
 		for _, rr := range requiredRoles {
 			if ur == rr {
@@ -135,6 +159,88 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// If no matching roles are found, deny access.
 	http.Error(rw, "Access Denied", http.StatusForbidden)
+}
+
+// 🔥 isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
+func (a *traefikPlugin) isWhitelisted(req *http.Request) bool {
+	serviceHost := req.Host
+	whitelist := a.getCachedWhitelist(serviceHost)
+
+	for _, wl := range whitelist {
+		if strings.HasPrefix(req.URL.Path, wl.Path) {
+			if wl.Method == "" || strings.EqualFold(req.Method, wl.Method) {
+				return true // ✅ Whitelisted
+			}
+		}
+	}
+	return false
+}
+
+// 🔥 getCachedWhitelist retrieves the whitelist from cache or fetches from Traefik API
+func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
+	cacheKey := "whitelist_" + serviceHost
+	if cached, found := a.cache.Load(cacheKey); found {
+		data := cached.(struct {
+			whitelist []Whitelist
+			expiry    time.Time
+		})
+		if time.Now().Before(data.expiry) {
+			return data.whitelist // ✅ Return cached whitelist
+		}
+	}
+
+	// Fetch new whitelist from Traefik API
+	newWhitelist, err := a.FetchWhitelistFromTraefik(serviceHost)
+	if err != nil {
+		fmt.Printf("Warning: Failed to fetch whitelist from Traefik: %v\n", err)
+		return a.config.Whitelist // Default to plugin-defined whitelist
+	}
+
+	// Store in cache with expiration
+	a.cache.Store(cacheKey, struct {
+		whitelist []Whitelist
+		expiry    time.Time
+	}{whitelist: newWhitelist, expiry: time.Now().Add(time.Duration(a.config.CacheTTL) * time.Second)})
+
+	return newWhitelist
+}
+
+// FetchWhitelistFromTraefik fetches the whitelist dynamically from Traefik API
+func (a *traefikPlugin) FetchWhitelistFromTraefik(serviceHost string) ([]Whitelist, error) {
+	resp, err := http.Get(a.config.TraefikApiUrl + "/api/rawdata")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var apiResponse TraefikAPIResponse
+	if err := json.Unmarshal(body, &apiResponse); err != nil {
+		return nil, err
+	}
+
+	var whitelist []Whitelist
+
+	for _, router := range apiResponse.HTTP.Routers {
+		if strings.Contains(router.Rule, serviceHost) {
+			for _, mw := range router.Middlewares {
+				if mwConfig, exists := apiResponse.HTTP.Middlewares[mw.Name]; exists {
+					if len(mwConfig.Plugin.RoleXpert.Whitelist) > 0 {
+						for _, path := range mwConfig.Plugin.RoleXpert.Whitelist {
+							whitelist = append(whitelist, Whitelist{Path: path})
+						}
+						return whitelist, nil
+					}
+				}
+			}
+		}
+	}
+
+	return whitelist, nil
 }
 
 // getRoleAndPermissionsOrFetchFromRoleXpert Fetch roles and permissions from RoleXpert API then cache all roles and permissions
@@ -249,4 +355,22 @@ type Claims struct {
 
 type ClaimsData struct {
 	Roles []string `json:"roles"`
+}
+
+type TraefikAPIResponse struct {
+	HTTP struct {
+		Routers map[string]struct {
+			Rule        string `json:"rule"`
+			Middlewares []struct {
+				Name string `json:"name"`
+			} `json:"middlewares"`
+		} `json:"routers"`
+		Middlewares map[string]struct {
+			Plugin struct {
+				RoleXpert struct {
+					Whitelist []string `json:"whitelist"`
+				} `json:"rolexpert"`
+			} `json:"plugin"`
+		} `json:"middlewares"`
+	} `json:"http"`
 }
