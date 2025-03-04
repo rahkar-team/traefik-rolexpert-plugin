@@ -129,10 +129,11 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				continue
 			}
 
-			regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
-			regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
-			regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
-			if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
+			if patternMatched(pattern, req) {
+				return
+			}
+
+			if patternMatched(pattern, req) {
 				requiredRoles = append(requiredRoles, role)
 				break
 			}
@@ -161,13 +162,24 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Error(rw, "Access Denied", http.StatusForbidden)
 }
 
+func patternMatched(pattern string, req *http.Request) bool {
+	regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
+	regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
+	if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
+		return true
+	} else {
+		return false
+	}
+}
+
 // 🔥 isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
 func (a *traefikPlugin) isWhitelisted(req *http.Request) bool {
 	serviceHost := req.Host
 	whitelist := a.getCachedWhitelist(serviceHost)
 
 	for _, wl := range whitelist {
-		if strings.HasPrefix(req.URL.Path, wl.Path) {
+		if patternMatched(wl.Path, req) {
 			if wl.Method == "" || strings.EqualFold(req.Method, wl.Method) {
 				return true // ✅ Whitelisted
 			}
