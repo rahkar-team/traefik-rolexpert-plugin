@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -23,40 +25,73 @@ type Config struct {
 	ClientId     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
 	RoleXpertUrl string `json:"rolexpertBaseUrl"`
+	CacheTTL     int    `json:"cacheTTL"`  // Cache expiration in seconds
+	Whitelist    string `json:"whitelist"` // Plugin-defined whitelist
+}
+
+// Whitelist defines allowed paths and optional methods
+type Whitelist struct {
+	Path   string `json:"path"`
+	Method string `json:"method,omitempty"`
+}
+
+type config struct {
+	*Config
+	whitelist []Whitelist
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
-	return &Config{}
+	return &Config{
+		CacheTTL: 300, // Default to 5 minutes cache
+	}
 }
 
 type traefikPlugin struct {
 	next            http.Handler
 	name            string
-	config          *Config
+	config          config
 	roleXpertClient Client
 	publicKey       []byte
 	rolePermissions map[string][]string
+	cache           sync.Map // In-memory cache for whitelists
 }
 
 // New creates a new instance of the middleware plugin.
-func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
+	var whitelist []Whitelist
+	if cfg.Whitelist != "" {
+		whitelist = parseRoutes(cfg.Whitelist)
+	}
+
 	client := NewClient(
-		config.ClientId,
-		config.ClientSecret,
-		config.RoleXpertUrl,
+		cfg.ClientId,
+		cfg.ClientSecret,
+		cfg.RoleXpertUrl,
 	)
+
+	var cf = config{
+		Config:    cfg,
+		whitelist: whitelist,
+	}
 
 	return &traefikPlugin{
 		next:            next,
 		name:            name,
-		config:          config,
+		config:          cf,
 		roleXpertClient: client,
+		cache:           sync.Map{},
 	}, nil
 }
 
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	//  Check if the request is whitelisted (from plugin or service)
+	if a.isWhitelisted(req) {
+		a.next.ServeHTTP(rw, req) // ✅ Skip authentication
+		return
+	}
+
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, BearerPrefix) {
 		http.Error(rw, "token invalid!", http.StatusUnauthorized)
@@ -88,12 +123,10 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Determine which roles (if any) authorize the request.
+	// Determine required roles for this request
 	var requiredRoles []string
-
 	for role, permissions := range rolesPermissions {
 		for _, permission := range permissions {
-			// Extract the HTTP method and BaseURL pattern
 			parts := strings.SplitN(permission, ":", 2)
 			if len(parts) != 2 {
 				continue
@@ -104,11 +137,11 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				continue
 			}
 
-			// Convert the permission pattern into a regular expression.
-			regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
-			regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
-			regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
-			if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
+			if patternMatched(pattern, req) {
+				return
+			}
+
+			if patternMatched(pattern, req) {
 				requiredRoles = append(requiredRoles, role)
 				break
 			}
@@ -117,13 +150,13 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	req.Header.Set(XAuthUserIdHeader, authUserId)
 
-	// If no roles are applicable for this request, allow it.
+	// If no roles are required, allow access
 	if len(requiredRoles) == 0 {
 		a.next.ServeHTTP(rw, req)
 		return
 	}
 
-	// Check if any of the user roles match the required roles.
+	// Check if user has a required role
 	for _, ur := range userRoles {
 		for _, rr := range requiredRoles {
 			if ur == rr {
@@ -135,6 +168,54 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	// If no matching roles are found, deny access.
 	http.Error(rw, "Access Denied", http.StatusForbidden)
+}
+
+func patternMatched(pattern string, req *http.Request) bool {
+	regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
+	regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
+	if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
+		return true
+	} else {
+		return false
+	}
+}
+
+// isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
+func (a *traefikPlugin) isWhitelisted(req *http.Request) bool {
+	serviceHost := req.Host
+	whitelist := a.getCachedWhitelist(serviceHost)
+
+	for _, wl := range whitelist {
+		if patternMatched(wl.Path, req) {
+			if wl.Method == "" || strings.EqualFold(req.Method, wl.Method) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getCachedWhitelist retrieves the whitelist from cache or fetches from Traefik API
+func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
+	cacheKey := "whitelist_" + serviceHost
+	if cached, found := a.cache.Load(cacheKey); found {
+		data := cached.(struct {
+			whitelist []Whitelist
+			expiry    time.Time
+		})
+		if time.Now().Before(data.expiry) {
+			return data.whitelist
+		}
+	}
+
+	// Store in cache with expiration
+	a.cache.Store(cacheKey, struct {
+		whitelist []Whitelist
+		expiry    time.Time
+	}{whitelist: a.config.whitelist, expiry: time.Now().Add(time.Duration(a.config.CacheTTL) * time.Second)})
+
+	return a.config.whitelist
 }
 
 // getRoleAndPermissionsOrFetchFromRoleXpert Fetch roles and permissions from RoleXpert API then cache all roles and permissions
@@ -240,6 +321,83 @@ func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 	}
 	a.publicKey = pk
 	return a.publicKey, nil
+}
+
+// parseRoutes converts a comma-separated string of routes into a slice of unique WhitelistEntry structs,
+// ensuring that if a wildcard method route (":/path") is present, specific method routes for that path are ignored.
+func parseRoutes(routeString string) []Whitelist {
+	// Split the input string by commas to get individual routes.
+	routes := strings.Split(routeString, ",")
+
+	// Map to track unique entries using a composite key of method and path.
+	uniqueEntries := make(map[string]struct{})
+	// Set to track paths that have a wildcard method.
+	wildcardPaths := make(map[string]struct{})
+	var whitelist []Whitelist
+
+	for _, route := range routes {
+		var methods, path string
+
+		// Check if the route contains a colon, indicating the presence of methods.
+		if colonIndex := strings.Index(route, ":"); colonIndex != -1 {
+			methods = route[:colonIndex]
+			path = route[colonIndex+1:]
+		} else {
+			// No methods specified; default to "*" (any method).
+			methods = "*"
+			path = route
+		}
+
+		// Trim any leading/trailing whitespace from path.
+		path = strings.TrimSpace(path)
+
+		// Ignore entries with both empty method and path.
+		if methods == "" && path == "" {
+			continue
+		}
+
+		// Handle the case where methods are empty (":/test").
+		if methods == "" {
+			methods = "*"
+		}
+
+		// Split methods by '|' to handle multiple methods.
+		methodList := strings.Split(methods, "|")
+
+		// Check if the path has a wildcard method.
+		if methods == "*" {
+			// Add path to wildcardPaths set.
+			wildcardPaths[path] = struct{}{}
+		}
+
+		// Create a WhitelistEntry for each method.
+		for _, method := range methodList {
+			// Trim any leading/trailing whitespace from method.
+			method = strings.TrimSpace(method)
+
+			// If method is "*", it implies any method; we can represent it as an empty string.
+			if method == "*" {
+				method = ""
+			}
+
+			// Create a unique key for the map.
+			key := method + ":" + path
+
+			// Check if the entry already exists in the map or if the path has a wildcard method.
+			if _, exists := uniqueEntries[key]; !exists {
+				if _, isWildcard := wildcardPaths[path]; !isWildcard || method == "" {
+					// Add the entry to the map and the whitelist slice.
+					uniqueEntries[key] = struct{}{}
+					whitelist = append(whitelist, Whitelist{
+						Method: method,
+						Path:   path,
+					})
+				}
+			}
+		}
+	}
+
+	return whitelist
 }
 
 type Claims struct {

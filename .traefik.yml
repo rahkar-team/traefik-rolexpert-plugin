@@ -14,6 +14,8 @@ summary: It's going to verify given user's token then authorized them.
 # This is mandatory,
 # and Plugins Catalog will try to execute the plugin with the data you provide as part of its startup validity tests.
 testData:
-  clientId: "Add RoleXpert client id."
-  clientSecret: "Add RoleXpert client secret."
-  rolexpertBaseUrl: "Add RoleXpert base url."
+  clientId: "ClientIdFake"
+  clientSecret: "ClientSecretFake"
+  rolexpertBaseUrl: "http://rolexpert:8080"
+  cacheTTL: 300  # Cache whitelist for 5 minutes
+  whitelist: "/test,GET:/users,/orders/**"
