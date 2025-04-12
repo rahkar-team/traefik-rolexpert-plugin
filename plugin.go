@@ -24,7 +24,7 @@ const (
 type Config struct {
 	ClientId     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
-	RoleXpertUrl string `json:"rolexpertBaseUrl"`
+	RoleXpertUrl string `json:"roleXpertUrl"`
 	CacheTTL     int    `json:"cacheTTL"`  // Cache expiration in seconds
 	Whitelist    string `json:"whitelist"` // Plugin-defined whitelist
 }
@@ -94,7 +94,7 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, BearerPrefix) {
-		http.Error(rw, "token invalid!", http.StatusUnauthorized)
+		http.Error(rw, "authorization header invalid!", http.StatusUnauthorized)
 		return
 	}
 
@@ -107,7 +107,7 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	authUserId, err := c.GetSubject()
 	if err != nil {
-		http.Error(rw, "token invalid!", http.StatusUnauthorized)
+		http.Error(rw, "token subject invalid!", http.StatusUnauthorized)
 		return
 	}
 
@@ -271,6 +271,7 @@ func toPublicPem(base64Key string) ([]byte, error) {
 func (a *traefikPlugin) verifyTokenAndGetPayload(tokenString string) (bool, *Claims) {
 	pk, err := a.getPublicKeyOrFetchFromRoleXpert()
 	if err != nil {
+		fmt.Printf("Failed to get RSA public key: %v", err)
 		return false, nil
 	}
 
@@ -315,7 +316,7 @@ func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 		return nil, fmt.Errorf("failed to get public key: %v", err)
 	}
 
-	pk, err := toPublicPem(response.PublicKey)
+	pk, err := toPublicPem(response.Base64PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal public key: %v", err)
 	}

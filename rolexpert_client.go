@@ -28,7 +28,7 @@ type RoleResponse struct {
 }
 
 type PublicKeyResponse struct {
-	PublicKey string `json:"base64PublicKey"`
+	Base64PublicKey string `json:"base64PublicKey"`
 }
 
 // Client represents the HTTP client with authentication details

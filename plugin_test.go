@@ -117,7 +117,7 @@ func TestVerifyTokenAndGetPayloadWithRoleXpertClientMock(t *testing.T) {
 					},
 				}, nil)
 				// Mock GetPublicKey response with base64 encoded key
-				mockClient.On("GetPublicKey").Return(PublicKeyResponse{PublicKey: encodedPublicKey}, nil)
+				mockClient.On("GetPublicKey").Return(PublicKeyResponse{Base64PublicKey: encodedPublicKey}, nil)
 				return mockClient
 			},
 			expectedStatus: http.StatusOK,
@@ -131,7 +131,7 @@ func TestVerifyTokenAndGetPayloadWithRoleXpertClientMock(t *testing.T) {
 				// Simulate error fetching roles
 				mockClient.On("FetchRoles").Return(RoleResponse{}, fmt.Errorf("error fetching roles"))
 				// Mock GetPublicKey response with base64 encoded key
-				mockClient.On("GetPublicKey").Return(PublicKeyResponse{PublicKey: encodedPublicKey}, nil)
+				mockClient.On("GetPublicKey").Return(PublicKeyResponse{Base64PublicKey: encodedPublicKey}, nil)
 				return mockClient
 			},
 			expectedStatus: http.StatusUnauthorized,
@@ -381,7 +381,7 @@ func TestRoleAuthorizationLogic(t *testing.T) {
 			// Create a mock RoleXpertClient.
 			mockClient := new(MockRoleXpertClient)
 			// Mock GetPublicKey to return our encoded test public key.
-			mockClient.On("GetPublicKey").Return(PublicKeyResponse{PublicKey: encodedPubKey}, nil)
+			mockClient.On("GetPublicKey").Return(PublicKeyResponse{Base64PublicKey: encodedPubKey}, nil)
 			// Mock FetchRoles per test case.
 			if tc.mockFetchRolesErr != nil {
 				mockClient.On("FetchRoles").Return(RoleResponse{}, tc.mockFetchRolesErr)

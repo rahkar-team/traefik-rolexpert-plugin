@@ -64,7 +64,7 @@ http:
         rolexpert:
           clientId: "ClientIdFake"
           clientSecret: "ClientSecretFake"
-          rolexpertBaseUrl: "http://rolexpert:8080"
+          roleXpertUrl: "http://rolexpert:8080"
           cacheTTL: 300  # Cache whitelist for 5 minutes
           whitelist: "GET:/test,/test1"
 
@@ -112,7 +112,7 @@ services:
       - "traefik.http.routers.my-service.middlewares=rolexpert-auth"
       - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.clientId={clientId}"
       - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.clientSecret={clientSecret}"
-      - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.rolexpertBaseUrl=http://rolexpert:8080"
+      - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.roleXpertUrl=http://rolexpert:8080"
       - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.whitelist=/test,POST:/create,/users/**"
 ```
 
@@ -131,7 +131,7 @@ If you are using Traefik with **Swarm mode**, add these labels to your Traefik c
   labels:
     - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.clientId=treafik"
     - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.clientSecret=Secret"
-    - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.rolexpertBaseUrl=http://rolexpert-url"
+    - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.roleXpertUrl=http://rolexpert-url"
     - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.cacheTTL=300"
 ```
 
@@ -149,7 +149,7 @@ If you are using Traefik with **Swarm mode**, add these labels to your Traefik c
 |--------------------|--------|---------------------------------------------------------------------------------------|
 | `clientId`         | string | Client ID for authentication.                                                         |
 | `clientSecret`     | string | Client secret for authentication.                                                     |
-| `rolexpertBaseUrl` | string | The base URL of your RoleXpert service.                                               |
+| `roleXpertUrl` | string | The base URL of your RoleXpert service.                                               |
 | `cacheTTL`         | int    | **(New)** How long (in seconds) to cache the whitelist. Default is `300` (5 minutes). |
 | `whitelist`        | list   | **(New)** List of globally whitelisted paths and methods.                             |
 

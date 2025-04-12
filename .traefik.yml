@@ -16,6 +16,6 @@ summary: It's going to verify given user's token then authorized them.
 testData:
   clientId: "ClientIdFake"
   clientSecret: "ClientSecretFake"
-  rolexpertBaseUrl: "http://rolexpert:8080"
+  roleXpertUrl: "http://rolexpert:8080"
   cacheTTL: 300  # Cache whitelist for 5 minutes
   whitelist: "/test,GET:/users,/orders/**"
