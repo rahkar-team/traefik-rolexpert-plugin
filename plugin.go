@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
@@ -110,6 +111,13 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, "token subject invalid!", http.StatusUnauthorized)
 		return
 	}
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(string(b))
 
 	userRoles := c.Data.Roles
 	if userRoles == nil {
