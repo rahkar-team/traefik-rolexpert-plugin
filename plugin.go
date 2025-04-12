@@ -308,6 +308,7 @@ func (a *traefikPlugin) verifyTokenAndGetPayload(tokenString string) (bool, *Cla
 
 func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 	if a.publicKey != nil {
+		fmt.Printf("Return cached public key: %s", a.publicKey)
 		return a.publicKey, nil
 	}
 
@@ -316,6 +317,7 @@ func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 		return nil, fmt.Errorf("failed to get public key: %v", err)
 	}
 
+	fmt.Printf("Get public key from API: %s", response.Base64PublicKey)
 	pk, err := toPublicPem(response.Base64PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal public key: %v", err)
