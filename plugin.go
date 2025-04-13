@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -60,6 +61,8 @@ type traefikPlugin struct {
 
 // New creates a new instance of the middleware plugin.
 func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
+	fmt.Printf("Plugin %s initialized", name)
+
 	var whitelist []Whitelist
 	if cfg.Whitelist != "" {
 		whitelist = parseRoutes(cfg.Whitelist)
@@ -70,6 +73,7 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 		cfg.ClientSecret,
 		cfg.RoleXpertUrl,
 	)
+	fmt.Printf("Plugin %s http-client initilized with %s", name, cfg.RoleXpertUrl)
 
 	var cf = config{
 		Config:    cfg,
@@ -87,7 +91,7 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	//  Check if the request is whitelisted (from plugin or service)
+	// Check if the request is whitelisted (from plugin or service)
 	if a.isWhitelisted(req) {
 		a.next.ServeHTTP(rw, req) // ✅ Skip authentication
 		return
@@ -105,19 +109,14 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, "token invalid!", http.StatusUnauthorized)
 		return
 	}
+	fmt.Printf("Token %+v \n", c)
 
-	authUserId, err := c.GetSubject()
-	if err != nil {
+	authUserId := c.Subject
+	if authUserId == "" {
 		http.Error(rw, "token subject invalid!", http.StatusUnauthorized)
 		return
 	}
-
-	b, err := json.Marshal(c)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(string(b))
+	fmt.Printf("Auth User: %s\n", authUserId)
 
 	userRoles := c.Data.Roles
 	if userRoles == nil {
@@ -184,9 +183,8 @@ func patternMatched(pattern string, req *http.Request) bool {
 	regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
 	if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 // isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
@@ -233,7 +231,7 @@ func (a *traefikPlugin) getRoleAndPermissionsOrFetchFromRoleXpert() (map[string]
 	}
 	rolesPermissions, err := a.roleXpertClient.FetchRoles()
 	if err != nil {
-		fmt.Printf("Error fetching roles and permissions: %v", err)
+		log.Fatalf("Error fetching roles and permissions: %v", err)
 		return nil, err
 	}
 
@@ -275,43 +273,43 @@ func toPublicPem(base64Key string) ([]byte, error) {
 
 	return pemBytes, nil
 }
-
 func (a *traefikPlugin) verifyTokenAndGetPayload(tokenString string) (bool, *Claims) {
 	pk, err := a.getPublicKeyOrFetchFromRoleXpert()
 	if err != nil {
-		fmt.Printf("Failed to get RSA public key: %v", err)
+		log.Printf("Failed to get RSA public key: %v", err)
 		return false, nil
 	}
 
 	// Parse the public key (assuming RSA for this example)
 	publicKey, err := jwt.ParseRSAPublicKeyFromPEM(pk)
 	if err != nil {
-		fmt.Printf("Failed to parse RSA public key: %v", err)
+		log.Printf("Failed to parse RSA public key: %v", err)
 		return false, nil
 	}
 
 	// Parse and validate the JWT
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		// Ensure the token's signing method matches the expected method
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return publicKey, nil
 	})
+
 	if err != nil {
-		fmt.Printf("Failed to parse and validate token: %v", err)
+		log.Printf("Failed to parse and validate token: %v", err)
 		return false, nil
 	}
 
-	// If the token is valid, you can access its claims
-	if c, ok := token.Claims.(*Claims); ok && token.Valid {
-		fmt.Println("Token is valid.")
-		// Access claims as needed
-		return true, c
-	} else {
-		fmt.Println("Invalid token.")
+	if !token.Valid {
+		log.Printf("Invalid token: %s", tokenString)
 		return false, nil
 	}
+	c, err := extractPayload(tokenString)
+	if err != nil {
+		log.Printf("Failed to extract token payload: %v", err)
+	}
+	return true, c
 }
 
 func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
@@ -330,74 +328,46 @@ func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal public key: %v", err)
 	}
+	fmt.Printf("New public key: %s", pk)
 	a.publicKey = pk
 	return a.publicKey, nil
 }
 
-// parseRoutes converts a comma-separated string of routes into a slice of unique WhitelistEntry structs,
-// ensuring that if a wildcard method route (":/path") is present, specific method routes for that path are ignored.
+// parseRoutes converts a comma-separated string of routes into a slice of unique Whitelist structs
 func parseRoutes(routeString string) []Whitelist {
-	// Split the input string by commas to get individual routes.
 	routes := strings.Split(routeString, ",")
-
-	// Map to track unique entries using a composite key of method and path.
 	uniqueEntries := make(map[string]struct{})
-	// Set to track paths that have a wildcard method.
 	wildcardPaths := make(map[string]struct{})
 	var whitelist []Whitelist
 
 	for _, route := range routes {
 		var methods, path string
-
-		// Check if the route contains a colon, indicating the presence of methods.
 		if colonIndex := strings.Index(route, ":"); colonIndex != -1 {
 			methods = route[:colonIndex]
 			path = route[colonIndex+1:]
 		} else {
-			// No methods specified; default to "*" (any method).
 			methods = "*"
 			path = route
 		}
-
-		// Trim any leading/trailing whitespace from path.
 		path = strings.TrimSpace(path)
-
-		// Ignore entries with both empty method and path.
 		if methods == "" && path == "" {
 			continue
 		}
-
-		// Handle the case where methods are empty (":/test").
 		if methods == "" {
 			methods = "*"
 		}
-
-		// Split methods by '|' to handle multiple methods.
 		methodList := strings.Split(methods, "|")
-
-		// Check if the path has a wildcard method.
 		if methods == "*" {
-			// Add path to wildcardPaths set.
 			wildcardPaths[path] = struct{}{}
 		}
-
-		// Create a WhitelistEntry for each method.
 		for _, method := range methodList {
-			// Trim any leading/trailing whitespace from method.
 			method = strings.TrimSpace(method)
-
-			// If method is "*", it implies any method; we can represent it as an empty string.
 			if method == "*" {
 				method = ""
 			}
-
-			// Create a unique key for the map.
 			key := method + ":" + path
-
-			// Check if the entry already exists in the map or if the path has a wildcard method.
 			if _, exists := uniqueEntries[key]; !exists {
 				if _, isWildcard := wildcardPaths[path]; !isWildcard || method == "" {
-					// Add the entry to the map and the whitelist slice.
 					uniqueEntries[key] = struct{}{}
 					whitelist = append(whitelist, Whitelist{
 						Method: method,
@@ -407,13 +377,57 @@ func parseRoutes(routeString string) []Whitelist {
 			}
 		}
 	}
-
 	return whitelist
 }
 
+func base64UrlDecode(input string) ([]byte, error) {
+	// Replace non-standard URL characters with standard base64 characters
+	input = strings.Replace(input, "-", "+", -1)
+	input = strings.Replace(input, "_", "/", -1)
+
+	// Pad the input if necessary to make its length a multiple of 4
+	switch len(input) % 4 {
+	case 2:
+		input += "=="
+	case 3:
+		input += "="
+	}
+
+	// Decode the base64 string
+	return base64.StdEncoding.DecodeString(input)
+}
+
+func extractPayload(jwtToken string) (*Claims, error) {
+	// Split the token into three parts: Header, Payload, Signature
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT token format")
+	}
+
+	// Decode the payload (second part)
+	payload, err := base64UrlDecode(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode payload: %v", err)
+	}
+
+	// Parse the payload as a JSON object
+	var claims Claims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal payload: %v", err)
+	}
+
+	return &claims, nil
+}
+
 type Claims struct {
-	Data ClaimsData `json:"data"`
-	jwt.RegisteredClaims
+	Data      ClaimsData `json:"data"`
+	Issuer    string     `json:"iss,omitempty"`
+	Subject   string     `json:"sub,omitempty"`
+	Audience  []string   `json:"aud,omitempty"`
+	ExpiresAt int        `json:"exp,omitempty"`
+	NotBefore int        `json:"nbf,omitempty"`
+	IssuedAt  int        `json:"iat,omitempty"`
+	ID        string     `json:"jti,omitempty"`
 }
 
 type ClaimsData struct {
