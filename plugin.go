@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	BearerPrefix      = "Bearer "
-	XAuthUserIdHeader = "X-Auth-User-Id"
+	BearerPrefix         = "Bearer "
+	XAuthUserIdHeader    = "X-Auth-User-Id"
+	XAuthUserRolesHeader = "X-Auth-User-Roles"
 )
 
 // Config defines the middleware configuration.
@@ -156,6 +157,9 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	req.Header.Set(XAuthUserIdHeader, authUserId)
+
+	strRoles := strings.Join(userRoles, ",")
+	req.Header.Set(XAuthUserRolesHeader, strRoles)
 
 	// If no roles are required, allow access
 	if len(requiredRoles) == 0 {
