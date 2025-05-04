@@ -87,7 +87,7 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	fmt.Printf("RoleXpert middleware is going to authorize: %s", req.URL.Path)
+	fmt.Printf("RoleXpert middleware is going to authorize: %v", req)
 
 	// Check if the request is whitelisted (from plugin or service)
 	if a.isWhitelisted(req) {
