@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	BearerPrefix         = "Bearer "
-	XAuthUserIdHeader    = "X-Auth-User-Id"
-	XAuthUserRolesHeader = "X-Auth-User-Roles"
-	DefaultCacheTTL      = 300
+	BearerPrefix           = "Bearer "
+	XAuthUserIdHeader      = "X-Auth-User-Id"
+	XAuthUserRolesHeader   = "X-Auth-User-Roles"
+	XForwardedPrefixHeader = "X-Forwarded-Prefix"
+	DefaultCacheTTL        = 300
 )
 
 // Config defines the middleware configuration.
@@ -87,10 +88,17 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	fmt.Printf("RoleXpert middleware is going to authorize: %v", req)
+	requestPath := fmt.Sprint(req.URL.Path)
+
+	forwardedPrefix := req.Header.Get(XForwardedPrefixHeader)
+	if forwardedPrefix == "" {
+		fmt.Println("No forwarded prefix header found")
+	} else {
+		requestPath = fmt.Sprintf("%v%v", forwardedPrefix, requestPath)
+	}
 
 	// Check if the request is whitelisted (from plugin or service)
-	if a.isWhitelisted(req) {
+	if a.isWhitelisted(req, requestPath) {
 		a.next.ServeHTTP(rw, req) // ✅ Skip authentication
 		return
 	}
@@ -107,20 +115,20 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, "token invalid!", http.StatusUnauthorized)
 		return
 	}
-	fmt.Printf("Token %+v \n", c)
 
 	authUserId := c.Subject
 	if authUserId == "" {
 		http.Error(rw, "token subject invalid!", http.StatusUnauthorized)
 		return
 	}
-	fmt.Printf("Auth User: %s\n", authUserId)
 
 	userRoles := c.Data.Roles
 	if userRoles == nil {
 		http.Error(rw, "illegal token payload", http.StatusExpectationFailed)
 		return
 	}
+
+	fmt.Printf("RoleXpert middleware is going to authorize request: %s for user: %s with roles: %v", requestPath, authUserId, userRoles)
 
 	rolesPermissions, err := a.getRoleAndPermissionsOrFetchFromRoleXpert()
 	if err != nil {
@@ -140,7 +148,7 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 
 			for _, permission := range permissions {
-				if patternMatched(permission, req.Method, req.URL.Path) {
+				if patternMatched(permission, req.Method, requestPath) {
 					a.next.ServeHTTP(rw, req)
 					return
 				}
@@ -198,12 +206,12 @@ func patternMatched(pattern string, reqMethod string, reqPath string) bool {
 }
 
 // isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
-func (a *traefikPlugin) isWhitelisted(req *http.Request) bool {
+func (a *traefikPlugin) isWhitelisted(req *http.Request, requestPath string) bool {
 	serviceHost := req.Host
 	whitelist := a.getCachedWhitelist(serviceHost)
 
 	for _, wl := range whitelist {
-		if patternMatched(wl, req.Method, req.URL.Path) {
+		if patternMatched(wl, req.Method, requestPath) {
 			return true
 		}
 	}
