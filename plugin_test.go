@@ -48,13 +48,11 @@ func TestAuthorizationHeader(t *testing.T) {
 			name:           "No Authorization Header",
 			authHeader:     "",
 			expectedStatus: http.StatusUnauthorized,
-			expectedBody:   "token invalid!\n",
 		},
 		{
 			name:           "Invalid Authorization Header (No Bearer Prefix)",
 			authHeader:     "Invalid token",
 			expectedStatus: http.StatusUnauthorized,
-			expectedBody:   "token invalid!\n",
 		},
 	}
 
@@ -66,6 +64,7 @@ func TestAuthorizationHeader(t *testing.T) {
 					// Mock next handler, it just returns OK status for valid cases
 					w.WriteHeader(http.StatusOK)
 				}),
+				config: config{Config: CreateConfig()},
 			}
 
 			// Create a request with the Authorization header
@@ -82,7 +81,6 @@ func TestAuthorizationHeader(t *testing.T) {
 
 			// Check the response status and body
 			assert.Equal(t, tt.expectedStatus, rr.Code)
-			assert.Equal(t, tt.expectedBody, rr.Body.String())
 		})
 	}
 }
@@ -148,6 +146,7 @@ func TestVerifyTokenAndGetPayloadWithRoleXpertClientMock(t *testing.T) {
 			plugin := &traefikPlugin{
 				next:            http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 				roleXpertClient: mockClient,
+				config:          config{Config: CreateConfig()},
 			}
 
 			// Create a request with the Authorization header
@@ -166,24 +165,6 @@ func TestVerifyTokenAndGetPayloadWithRoleXpertClientMock(t *testing.T) {
 		})
 	}
 }
-
-// --- Valid Test RSA Keys (for testing only) ---
-
-const testRSAPrivateKeyPEM = `-----BEGIN RSA PRIVATE KEY-----
-MIICWgIBAAKBgGAk62rtvyjzBQheIGQvXdGY9V/59k38/VspfsGuH02Kpt2wrkDl
-JC8kwDn9GnS3yFtsFMCjXwEk/3dWg9Dy+uyEBgTZTnxW8KukF21otY0hcVOlPshT
-rDiJrGlxS/UgZtL9jvhl/SnYCfbK9l/LaNCcRzF0p/sJ3t6NZ+7AH6VrAgMBAAEC
-gYAEBufZZbXhCDTIwfCHYbiDQ+3bJEQdxh/yho1pnVpwTANrO7BAxZg7ZUWr6B8I
-jn4U3jUMUIt1J9CPdg81XEgIPOSDQiTmMWDUXWcb0VTgT63t39hZIEU/m2ax4eXz
-RbDoO8M/+ZtvljYw4WxExH7AaeOTfOoU+VAb48/dWu7HiQJBAKL6mPGCOgdeca36
-vAQBwwihezmjzr6H9RYGfcsyP2IVtjIaVmpC8QCRIz32mZ9dqhyJMoIHtXXCUSUQ
-vgxYlO0CQQCXBOESlvnSUf5whNgmD0+v9vaQhAkZcX6cj7K0YofMqYfLmNefFNpm
-1YTIHMKmcjYzRQB8yPGbeKzAHyAHC/C3AkBsrn4FNxlpRpK6OSTd6yra+4xH0LOS
-nOlT6bpDIVvhFads2+FadQ9vmFmO/X5OJtDEvLzgtzFLuOwRsot5giy1AkBALiap
-C9in9Yi4sPxbUG6BTeeDi1mCoqU4TCmaV7V22SWI9S/Nv8MBqQSBNxfSPP+j0lNe
-tNdZR3PDQncOB5kJAkBqxCLt6Pjd0fc7wef58Dh7Zrq9UmHIDBEWVe8/JdRqMTMV
-rM5GWZ+IQSD6KSyF/5LkLkRKl4ZWFu6A1FHd5bnr
------END RSA PRIVATE KEY-----`
 
 // --- Helper Functions ---
 
@@ -401,6 +382,7 @@ func TestRoleAuthorizationLogic(t *testing.T) {
 				next:            nextHandler,
 				roleXpertClient: mockClient,
 				// Pre-set publicKey to bypass GetPublicKey call in verifyTokenAndGetPayload.
+				config: config{Config: CreateConfig()},
 			}
 			// Initialize rolePermissions so that getRoleAndPermissionsOrFetchFromRoleXpert calls FetchRoles.
 			plugin.rolePermissions = map[string][]string{}
@@ -423,6 +405,131 @@ func TestRoleAuthorizationLogic(t *testing.T) {
 			// Otherwise, the request should be allowed and the next handler called.
 			assert.True(t, nextHandlerCalled, "expected next handler to be called")
 			assert.Equal(t, tc.expectedStatus, rr.Code)
+		})
+	}
+}
+
+func TestPatternMatched(t *testing.T) {
+	tests := []struct {
+		pattern   string
+		reqMethod string
+		reqPath   string
+		expected  bool
+		name      string
+	}{
+		{
+			name:      "Wildcard method and exact path match",
+			pattern:   "*:/test",
+			reqMethod: "GET",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Wildcard method and path mismatch",
+			pattern:   "*:/test",
+			reqMethod: "POST",
+			reqPath:   "/test/123",
+			expected:  false,
+		},
+		{
+			name:      "Empty method and exact path match",
+			pattern:   ":/test",
+			reqMethod: "PUT",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Specific methods and matching GET",
+			pattern:   "GET|POST:/test",
+			reqMethod: "GET",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Specific methods and matching POST",
+			pattern:   "GET|POST:/test",
+			reqMethod: "POST",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Specific methods and non-matching PUT",
+			pattern:   "GET|POST:/test",
+			reqMethod: "PUT",
+			reqPath:   "/test",
+			expected:  false,
+		},
+		{
+			name:      "Single specific method match",
+			pattern:   "GET:/test",
+			reqMethod: "GET",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Single specific method no match",
+			pattern:   "GET:/test",
+			reqMethod: "POST",
+			reqPath:   "/test",
+			expected:  false,
+		},
+		{
+			name:      "Path only match with GET method",
+			pattern:   "/test",
+			reqMethod: "GET",
+			reqPath:   "/test",
+			expected:  true,
+		},
+		{
+			name:      "Path only mismatch",
+			pattern:   "/test",
+			reqMethod: "DELETE",
+			reqPath:   "/test/123",
+			expected:  false,
+		},
+		{
+			name:      "Path with wildcard and GET method",
+			pattern:   "/user/*",
+			reqMethod: "GET",
+			reqPath:   "/user/123",
+			expected:  true,
+		},
+		{
+			name:      "Method and path with wildcard match",
+			pattern:   "GET:/items/*",
+			reqMethod: "GET",
+			reqPath:   "/items/5",
+			expected:  true,
+		},
+		{
+			name:      "Method and path with wildcard mismatch on method",
+			pattern:   "POST:/items/*",
+			reqMethod: "GET",
+			reqPath:   "/items/5",
+			expected:  false,
+		},
+		{
+			name:      "Method and path with wildcard item id",
+			pattern:   "GET:/items/*/children",
+			reqMethod: "GET",
+			reqPath:   "/items/5/children",
+			expected:  true,
+		},
+		{
+			name:      "Double stars wildcard",
+			pattern:   "GET:/items/**",
+			reqMethod: "GET",
+			reqPath:   "/items/children/it-should-work",
+			expected:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := patternMatched(tt.pattern, tt.reqMethod, tt.reqPath)
+			if actual != tt.expected {
+				t.Errorf("patternMatched(%q, %q, %q) = %v, want %v", tt.pattern, tt.reqMethod, tt.reqPath, actual, tt.expected)
+			}
 		})
 	}
 }

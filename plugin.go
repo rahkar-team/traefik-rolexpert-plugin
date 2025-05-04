@@ -21,6 +21,7 @@ const (
 	BearerPrefix         = "Bearer "
 	XAuthUserIdHeader    = "X-Auth-User-Id"
 	XAuthUserRolesHeader = "X-Auth-User-Roles"
+	DefaultCacheTTL      = 300
 )
 
 // Config defines the middleware configuration.
@@ -32,21 +33,16 @@ type Config struct {
 	Whitelist    string `json:"whitelist"` // Plugin-defined whitelist
 }
 
-// Whitelist defines allowed paths and optional methods
-type Whitelist struct {
-	Path   string `json:"path"`
-	Method string `json:"method,omitempty"`
-}
-
 type config struct {
 	*Config
-	whitelist []Whitelist
+	whitelist []string
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
+	ttl := DefaultCacheTTL
 	return &Config{
-		CacheTTL: 300, // Default to 5 minutes cache
+		CacheTTL: ttl, // Default to 5 minutes cache
 	}
 }
 
@@ -64,11 +60,6 @@ type traefikPlugin struct {
 func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
 	fmt.Printf("Plugin %s initialized", name)
 
-	var whitelist []Whitelist
-	if cfg.Whitelist != "" {
-		whitelist = parseRoutes(cfg.Whitelist)
-	}
-
 	client := NewClient(
 		cfg.ClientId,
 		cfg.ClientSecret,
@@ -76,9 +67,13 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 	)
 	fmt.Printf("Plugin %s http-client initilized with %s", name, cfg.RoleXpertUrl)
 
+	var wl []string
+	if cfg.Whitelist != "" {
+		wl = strings.Split(cfg.Whitelist, ",")
+	}
 	var cf = config{
 		Config:    cfg,
-		whitelist: whitelist,
+		whitelist: wl,
 	}
 
 	return &traefikPlugin{
@@ -131,48 +126,22 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Determine required roles for this request
-	var requiredRoles []string
-	for role, permissions := range rolesPermissions {
-		for _, permission := range permissions {
-			parts := strings.SplitN(permission, ":", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			method, pattern := parts[0], parts[1]
-
-			if strings.ToUpper(req.Method) != strings.ToUpper(method) {
-				continue
-			}
-
-			if patternMatched(pattern, req) {
-				return
-			}
-
-			if patternMatched(pattern, req) {
-				requiredRoles = append(requiredRoles, role)
-				break
-			}
-		}
-	}
-
 	req.Header.Set(XAuthUserIdHeader, authUserId)
-
 	strRoles := strings.Join(userRoles, ",")
 	req.Header.Set(XAuthUserRolesHeader, strRoles)
 
-	// If no roles are required, allow access
-	if len(requiredRoles) == 0 {
-		a.next.ServeHTTP(rw, req)
-		return
-	}
-
-	// Check if user has a required role
+	// Determine user has access to the resource based on user's role
 	for _, ur := range userRoles {
-		for _, rr := range requiredRoles {
-			if ur == rr {
-				a.next.ServeHTTP(rw, req)
-				return
+		for role, permissions := range rolesPermissions {
+			if ur != role {
+				continue //skip
+			}
+
+			for _, permission := range permissions {
+				if patternMatched(permission, req.Method, req.URL.Path) {
+					a.next.ServeHTTP(rw, req)
+					return
+				}
 			}
 		}
 	}
@@ -181,13 +150,48 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	http.Error(rw, "Access Denied", http.StatusForbidden)
 }
 
-func patternMatched(pattern string, req *http.Request) bool {
-	regexPattern := "^" + regexp.QuoteMeta(pattern) + "$"
-	regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
-	regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
-	if matched, err := regexp.MatchString(regexPattern, req.URL.Path); err == nil && matched {
+func patternMatched(pattern string, reqMethod string, reqPath string) bool {
+	parts := strings.SplitN(pattern, ":", 2)
+	methodPattern := parts[0]
+	pathPattern := ""
+	if len(parts) == 2 {
+		pathPattern = parts[1]
+	} else {
+		pathPattern = methodPattern // Handle cases where no colon is present
+		methodPattern = "*"         // Default to all methods
+	}
+	if methodPattern == "" {
+		methodPattern = "*"
+	}
+
+	// Handle method matching
+	if methodPattern != "*" {
+		methods := strings.Split(methodPattern, "|")
+		methodMatched := false
+		for _, method := range methods {
+			if strings.ToUpper(method) == strings.ToUpper(reqMethod) {
+				methodMatched = true
+				break
+			}
+		}
+		if !methodMatched {
+			return false
+		}
+	}
+
+	// Handle path pattern matching
+	if pathPattern != "" {
+		regexPattern := "^" + regexp.QuoteMeta(pathPattern) + "$"
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*\\*", ".*")
+		regexPattern = strings.ReplaceAll(regexPattern, "\\*", "[^/]*")
+		if matched, err := regexp.MatchString(regexPattern, reqPath); err == nil && matched {
+			return true
+		}
+	} else {
+		// If no path pattern, and method matched (or was '*'), then it's a match.
 		return true
 	}
+
 	return false
 }
 
@@ -197,21 +201,19 @@ func (a *traefikPlugin) isWhitelisted(req *http.Request) bool {
 	whitelist := a.getCachedWhitelist(serviceHost)
 
 	for _, wl := range whitelist {
-		if patternMatched(wl.Path, req) {
-			if wl.Method == "" || strings.EqualFold(req.Method, wl.Method) {
-				return true
-			}
+		if patternMatched(wl, req.Method, req.URL.Path) {
+			return true
 		}
 	}
 	return false
 }
 
 // getCachedWhitelist retrieves the whitelist from cache or fetches from Traefik API
-func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
+func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []string {
 	cacheKey := "whitelist_" + serviceHost
 	if cached, found := a.cache.Load(cacheKey); found {
 		data := cached.(struct {
-			whitelist []Whitelist
+			whitelist []string
 			expiry    time.Time
 		})
 		if time.Now().Before(data.expiry) {
@@ -221,7 +223,7 @@ func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
 
 	// Store in cache with expiration
 	a.cache.Store(cacheKey, struct {
-		whitelist []Whitelist
+		whitelist []string
 		expiry    time.Time
 	}{whitelist: a.config.whitelist, expiry: time.Now().Add(time.Duration(a.config.CacheTTL) * time.Second)})
 
@@ -230,7 +232,7 @@ func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []Whitelist {
 
 // getRoleAndPermissionsOrFetchFromRoleXpert Fetch roles and permissions from RoleXpert API then cache all roles and permissions
 func (a *traefikPlugin) getRoleAndPermissionsOrFetchFromRoleXpert() (map[string][]string, error) {
-	if a.rolePermissions == nil {
+	if a.rolePermissions != nil {
 		return a.rolePermissions, nil
 	}
 	rolesPermissions, err := a.roleXpertClient.FetchRoles()
@@ -335,53 +337,6 @@ func (a *traefikPlugin) getPublicKeyOrFetchFromRoleXpert() ([]byte, error) {
 	fmt.Printf("New public key: %s", pk)
 	a.publicKey = pk
 	return a.publicKey, nil
-}
-
-// parseRoutes converts a comma-separated string of routes into a slice of unique Whitelist structs
-func parseRoutes(routeString string) []Whitelist {
-	routes := strings.Split(routeString, ",")
-	uniqueEntries := make(map[string]struct{})
-	wildcardPaths := make(map[string]struct{})
-	var whitelist []Whitelist
-
-	for _, route := range routes {
-		var methods, path string
-		if colonIndex := strings.Index(route, ":"); colonIndex != -1 {
-			methods = route[:colonIndex]
-			path = route[colonIndex+1:]
-		} else {
-			methods = "*"
-			path = route
-		}
-		path = strings.TrimSpace(path)
-		if methods == "" && path == "" {
-			continue
-		}
-		if methods == "" {
-			methods = "*"
-		}
-		methodList := strings.Split(methods, "|")
-		if methods == "*" {
-			wildcardPaths[path] = struct{}{}
-		}
-		for _, method := range methodList {
-			method = strings.TrimSpace(method)
-			if method == "*" {
-				method = ""
-			}
-			key := method + ":" + path
-			if _, exists := uniqueEntries[key]; !exists {
-				if _, isWildcard := wildcardPaths[path]; !isWildcard || method == "" {
-					uniqueEntries[key] = struct{}{}
-					whitelist = append(whitelist, Whitelist{
-						Method: method,
-						Path:   path,
-					})
-				}
-			}
-		}
-	}
-	return whitelist
 }
 
 func base64UrlDecode(input string) ([]byte, error) {
