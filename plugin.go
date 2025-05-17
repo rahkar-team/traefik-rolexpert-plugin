@@ -89,7 +89,7 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 // ServeHTTP processes incoming requests.
 func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	// Ignore options requests
-	if req.Method != http.MethodOptions {
+	if req.Method == http.MethodOptions {
 		a.next.ServeHTTP(rw, req)
 		return
 	}
