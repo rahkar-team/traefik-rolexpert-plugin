@@ -13,6 +13,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,7 +135,7 @@ func TestVerifyTokenAndGetPayloadWithRoleXpertClientMock(t *testing.T) {
 				return mockClient
 			},
 			expectedStatus: http.StatusUnauthorized,
-			expectedBody:   "token invalid!\n",
+			expectedBody:   "{\"errors\":[{\"code\":\"invalid_token\",\"message\":\"token invalid\"}]}\n",
 		},
 	}
 
@@ -323,7 +325,7 @@ func TestRoleAuthorizationLogic(t *testing.T) {
 			reqMethod:      "GET",
 			reqURL:         "/allowed",
 			expectedStatus: http.StatusInternalServerError,
-			expectedBody:   "Error fetching roles and permissions: failed to fetch roles\n",
+			expectedBody:   "{\"errors\":[{\"code\":\"internal_error\",\"message\":\"Error fetching roles and permissions\"}]}\n",
 		},
 		{
 			name: "Malformed permission string - allowed",
@@ -405,6 +407,165 @@ func TestRoleAuthorizationLogic(t *testing.T) {
 			// Otherwise, the request should be allowed and the next handler called.
 			assert.True(t, nextHandlerCalled, "expected next handler to be called")
 			assert.Equal(t, tc.expectedStatus, rr.Code)
+		})
+	}
+}
+
+func TestBlocklistFunctionality(t *testing.T) {
+	tests := []struct {
+		name           string
+		blocklist      string
+		reqMethod      string
+		reqPath        string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "Request matches blocklist - should proceed to auth (not bypass)",
+			blocklist:      "GET:/blocked,POST:/admin",
+			reqMethod:      "GET",
+			reqPath:        "/blocked",
+			expectedStatus: http.StatusUnauthorized,
+			expectedBody:   "{\"errors\":[{\"code\":\"unauthorized\",\"message\":\"authorization required\"}]}\n",
+		},
+		{
+			name:           "Request doesn't match blocklist - should proceed to auth",
+			blocklist:      "GET:/blocked,POST:/admin",
+			reqMethod:      "GET",
+			reqPath:        "/allowed",
+			expectedStatus: http.StatusUnauthorized,
+			expectedBody:   "{\"errors\":[{\"code\":\"unauthorized\",\"message\":\"authorization required\"}]}\n",
+		},
+		{
+			name:           "Empty blocklist - should proceed to auth",
+			blocklist:      "",
+			reqMethod:      "GET",
+			reqPath:        "/anything",
+			expectedStatus: http.StatusUnauthorized,
+			expectedBody:   "{\"errors\":[{\"code\":\"unauthorized\",\"message\":\"authorization required\"}]}\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create plugin config with blocklist
+			cfg := &Config{
+				Blocklist: tt.blocklist,
+				CacheTTL:  300,
+			}
+
+			// Parse blocklist
+			var bl []string
+			if cfg.Blocklist != "" {
+				bl = strings.Split(cfg.Blocklist, ",")
+			}
+
+			// Create plugin instance
+			plugin := &traefikPlugin{
+				next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}),
+				config: config{
+					Config:    cfg,
+					blocklist: bl,
+				},
+				cache: sync.Map{},
+			}
+
+			// Create request
+			req := httptest.NewRequest(tt.reqMethod, tt.reqPath, nil)
+			rr := httptest.NewRecorder()
+
+			// Call ServeHTTP
+			plugin.ServeHTTP(rr, req)
+
+			// Check response
+			assert.Equal(t, tt.expectedStatus, rr.Code)
+			assert.Equal(t, tt.expectedBody, rr.Body.String())
+		})
+	}
+}
+
+func TestWhitelistAndBlocklistTogether(t *testing.T) {
+	tests := []struct {
+		name           string
+		whitelist      string
+		blocklist      string
+		reqMethod      string
+		reqPath        string
+		expectedStatus int
+		description    string
+	}{
+		{
+			name:           "Path in blocklist should not be whitelisted (requires auth)",
+			whitelist:      "GET:/test,POST:/admin",
+			blocklist:      "GET:/test",
+			reqMethod:      "GET",
+			reqPath:        "/test",
+			expectedStatus: http.StatusUnauthorized,
+			description:    "Blocklist prevents whitelist bypass, requires auth",
+		},
+		{
+			name:           "Path in whitelist but not blocklist should be allowed",
+			whitelist:      "GET:/allowed,POST:/admin",
+			blocklist:      "GET:/blocked",
+			reqMethod:      "GET",
+			reqPath:        "/allowed",
+			expectedStatus: http.StatusOK,
+			description:    "Whitelisted path should be allowed when not blocked",
+		},
+		{
+			name:           "Path not in either list should proceed to auth",
+			whitelist:      "GET:/allowed",
+			blocklist:      "GET:/blocked",
+			reqMethod:      "GET",
+			reqPath:        "/other",
+			expectedStatus: http.StatusUnauthorized,
+			description:    "Path not in whitelist or blocklist should require auth",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create plugin config
+			cfg := &Config{
+				Whitelist: tt.whitelist,
+				Blocklist: tt.blocklist,
+				CacheTTL:  300,
+			}
+
+			// Parse lists
+			var wl []string
+			if cfg.Whitelist != "" {
+				wl = strings.Split(cfg.Whitelist, ",")
+			}
+			var bl []string
+			if cfg.Blocklist != "" {
+				bl = strings.Split(cfg.Blocklist, ",")
+			}
+
+			// Create plugin instance
+			plugin := &traefikPlugin{
+				next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}),
+				config: config{
+					Config:    cfg,
+					whitelist: wl,
+					blocklist: bl,
+				},
+				cache: sync.Map{},
+			}
+
+			// Create request
+			req := httptest.NewRequest(tt.reqMethod, tt.reqPath, nil)
+			rr := httptest.NewRecorder()
+
+			// Call ServeHTTP
+			plugin.ServeHTTP(rr, req)
+
+			// Check response
+			assert.Equal(t, tt.expectedStatus, rr.Code, tt.description)
 		})
 	}
 }

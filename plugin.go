@@ -25,6 +25,17 @@ const (
 	DefaultCacheTTL        = 300
 )
 
+// ErrorResponse represents the JSON error response structure
+type ErrorResponse struct {
+	Errors []ErrorDetail `json:"errors"`
+}
+
+// ErrorDetail represents individual error information
+type ErrorDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 // Config defines the middleware configuration.
 type Config struct {
 	ClientId     string `json:"clientId"`
@@ -32,11 +43,13 @@ type Config struct {
 	RoleXpertUrl string `json:"roleXpertUrl"`
 	CacheTTL     int    `json:"cacheTTL"`  // Cache expiration in seconds
 	Whitelist    string `json:"whitelist"` // Plugin-defined whitelist
+	Blocklist    string `json:"blocklist"` // Plugin-defined blocklist
 }
 
 type config struct {
 	*Config
 	whitelist []string
+	blocklist []string
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -57,6 +70,23 @@ type traefikPlugin struct {
 	cache           sync.Map // In-memory cache for whitelists
 }
 
+// sendJSONError sends a JSON formatted error response
+func sendJSONError(rw http.ResponseWriter, statusCode int, errorCode, message string) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(statusCode)
+
+	errorResponse := ErrorResponse{
+		Errors: []ErrorDetail{
+			{
+				Code:    errorCode,
+				Message: message,
+			},
+		},
+	}
+
+	json.NewEncoder(rw).Encode(errorResponse)
+}
+
 // New creates a new instance of the middleware plugin.
 func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
 	fmt.Printf("Plugin %s initialized", name)
@@ -72,9 +102,16 @@ func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.H
 	if cfg.Whitelist != "" {
 		wl = strings.Split(cfg.Whitelist, ",")
 	}
+
+	var bl []string
+	if cfg.Blocklist != "" {
+		bl = strings.Split(cfg.Blocklist, ",")
+	}
+
 	var cf = config{
 		Config:    cfg,
 		whitelist: wl,
+		blocklist: bl,
 	}
 
 	return &traefikPlugin{
@@ -104,33 +141,34 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	// Check if the request is whitelisted (from plugin or service)
-	if a.isWhitelisted(req, requestPath) {
+	// Blocked requests will go through normal auth flow - no early bypass
+	if !a.isBlocked(req, requestPath) && a.isWhitelisted(req, requestPath) {
 		a.next.ServeHTTP(rw, req) // ✅ Skip authentication
 		return
 	}
 
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, BearerPrefix) {
-		http.Error(rw, "authorization header invalid!", http.StatusUnauthorized)
+		sendJSONError(rw, http.StatusUnauthorized, "unauthorized", "authorization required")
 		return
 	}
 
 	token := strings.TrimPrefix(authHeader, BearerPrefix)
 	ok, c := a.verifyTokenAndGetPayload(token)
 	if !ok {
-		http.Error(rw, "token invalid!", http.StatusUnauthorized)
+		sendJSONError(rw, http.StatusUnauthorized, "invalid_token", "token invalid")
 		return
 	}
 
 	authUserId := c.Subject
 	if authUserId == "" {
-		http.Error(rw, "token subject invalid!", http.StatusUnauthorized)
+		sendJSONError(rw, http.StatusUnauthorized, "invalid_token", "token subject invalid")
 		return
 	}
 
 	userRoles := c.Data.Roles
 	if userRoles == nil {
-		http.Error(rw, "illegal token payload", http.StatusExpectationFailed)
+		sendJSONError(rw, http.StatusBadRequest, "invalid_token", "illegal token payload")
 		return
 	}
 
@@ -138,7 +176,7 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	rolesPermissions, err := a.getRoleAndPermissionsOrFetchFromRoleXpert()
 	if err != nil {
-		http.Error(rw, fmt.Sprintf("Error fetching roles and permissions: %v", err), http.StatusInternalServerError)
+		sendJSONError(rw, http.StatusInternalServerError, "internal_error", "Error fetching roles and permissions")
 		return
 	}
 
@@ -163,7 +201,7 @@ func (a *traefikPlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	// If no matching roles are found, deny access.
-	http.Error(rw, "Access Denied", http.StatusForbidden)
+	sendJSONError(rw, http.StatusForbidden, "access_denied", "insufficient permissions")
 }
 
 func patternMatched(pattern string, reqMethod string, reqPath string) bool {
@@ -211,6 +249,19 @@ func patternMatched(pattern string, reqMethod string, reqPath string) bool {
 	return false
 }
 
+// isBlocked checks if the request matches any blocked paths
+func (a *traefikPlugin) isBlocked(req *http.Request, requestPath string) bool {
+	serviceHost := req.Host
+	blocklist := a.getCachedBlocklist(serviceHost)
+
+	for _, bl := range blocklist {
+		if patternMatched(bl, req.Method, requestPath) {
+			return true
+		}
+	}
+	return false
+}
+
 // isWhitelisted checks if the request matches any whitelisted paths (from plugin or service)
 func (a *traefikPlugin) isWhitelisted(req *http.Request, requestPath string) bool {
 	serviceHost := req.Host
@@ -224,7 +275,7 @@ func (a *traefikPlugin) isWhitelisted(req *http.Request, requestPath string) boo
 	return false
 }
 
-// getCachedWhitelist retrieves the whitelist from cache or fetches from Traefik API
+// getCachedWhitelist retrieves the whitelist from cache or returns configured whitelist
 func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []string {
 	cacheKey := "whitelist_" + serviceHost
 	if cached, found := a.cache.Load(cacheKey); found {
@@ -244,6 +295,28 @@ func (a *traefikPlugin) getCachedWhitelist(serviceHost string) []string {
 	}{whitelist: a.config.whitelist, expiry: time.Now().Add(time.Duration(a.config.CacheTTL) * time.Second)})
 
 	return a.config.whitelist
+}
+
+// getCachedBlocklist retrieves the blocklist from cache or returns configured blocklist
+func (a *traefikPlugin) getCachedBlocklist(serviceHost string) []string {
+	cacheKey := "blocklist_" + serviceHost
+	if cached, found := a.cache.Load(cacheKey); found {
+		data := cached.(struct {
+			blocklist []string
+			expiry    time.Time
+		})
+		if time.Now().Before(data.expiry) {
+			return data.blocklist
+		}
+	}
+
+	// Store in cache with expiration
+	a.cache.Store(cacheKey, struct {
+		blocklist []string
+		expiry    time.Time
+	}{blocklist: a.config.blocklist, expiry: time.Now().Add(time.Duration(a.config.CacheTTL) * time.Second)})
+
+	return a.config.blocklist
 }
 
 // getRoleAndPermissionsOrFetchFromRoleXpert Fetch roles and permissions from RoleXpert API then cache all roles and permissions

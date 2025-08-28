@@ -19,3 +19,4 @@ testData:
   roleXpertUrl: "http://rolexpert:8080"
   cacheTTL: 300  # Cache whitelist for 5 minutes
   whitelist: "/test,GET:/users,/orders/**"
+  blocklist: "/admin"
