@@ -28,8 +28,10 @@ users with specific roles, all without modifying your application code.
 - **Lightweight and Fast** – Runs inside Traefik with minimal overhead.
 - **Optional Pass-Through of User Info** – Forward user identity information to backend services.
 - **Dynamic Whitelist Support** – Skip authentication for whitelisted routes.
+- **Blocklist Support** – **(New)** Prevent specific paths from bypassing authentication, even if whitelisted.
 - **Service-Specific Whitelist via Traefik Labels** – Each service can define its own whitelist dynamically.
 - **Configurable API & Caching** – Reduce API calls by caching whitelisted routes.
+- **Structured JSON Error Responses** – **(New)** Returns consistent JSON error responses with error codes for better client integration.
 
 ## Installation & Usage
 
@@ -67,6 +69,7 @@ http:
           roleXpertUrl: "http://rolexpert:8080"
           cacheTTL: 300  # Cache whitelist for 5 minutes
           whitelist: "GET:/test,/test1"
+          blocklist: "GET:/admin"  # Prevent admin paths from bypassing auth
 
   routers:
     secure-api:
@@ -150,8 +153,84 @@ If you are using Traefik with **Swarm mode**, add these labels to your Traefik c
 | `clientId`         | string | Client ID for authentication.                                                         |
 | `clientSecret`     | string | Client secret for authentication.                                                     |
 | `roleXpertUrl` | string | The base URL of your RoleXpert service.                                               |
-| `cacheTTL`         | int    | **(New)** How long (in seconds) to cache the whitelist. Default is `300` (5 minutes). |
-| `whitelist`        | list   | **(New)** List of globally whitelisted paths and methods.                             |
+| `cacheTTL`         | int    | How long (in seconds) to cache the whitelist. Default is `300` (5 minutes). |
+| `whitelist`        | string | Comma-separated list of globally whitelisted paths and methods.                             |
+| `blocklist`        | string | **(New)** Comma-separated list of paths/methods that cannot bypass authentication. Prevents whitelist bypass. |
+
+## Blocklist Configuration Example
+
+The blocklist feature allows you to prevent certain paths from bypassing authentication, even if they would normally be whitelisted:
+
+```yaml
+http:
+  middlewares:
+    roles-check:
+      plugin:
+        rolexpert:
+          clientId: "ClientIdFake"
+          clientSecret: "ClientSecretFake"
+          roleXpertUrl: "http://rolexpert:8080"
+          cacheTTL: 300
+          whitelist: "/**"                      # Allow all paths to bypass auth
+          blocklist: "GET:/admin,DELETE:/users" # These paths must authenticate
+```
+
+With this configuration:
+- `GET /health` → whitelisted, bypasses authentication ✅
+- `GET /admin` → blocked from whitelist bypass, requires JWT + role authorization ⚠️
+- `DELETE /users` → blocked from whitelist bypass, requires JWT + role authorization ⚠️
+
+## Error Responses
+
+The plugin returns structured JSON error responses for better client integration:
+
+### Unauthorized Access (401)
+```json
+{
+  "errors": [
+    {
+      "code": "unauthorized",
+      "message": "authorization required"
+    }
+  ]
+}
+```
+
+### Invalid Token (401)
+```json
+{
+  "errors": [
+    {
+      "code": "invalid_token",
+      "message": "token invalid"
+    }
+  ]
+}
+```
+
+### Access Denied (403)
+```json
+{
+  "errors": [
+    {
+      "code": "access_denied",
+      "message": "insufficient permissions"
+    }
+  ]
+}
+```
+
+### Internal Server Error (500)
+```json
+{
+  "errors": [
+    {
+      "code": "internal_error",
+      "message": "Error fetching roles and permissions"
+    }
+  ]
+}
+```
 
 ## Development & Contribution
 
