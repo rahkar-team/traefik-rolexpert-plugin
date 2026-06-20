@@ -11,9 +11,7 @@ import (
 func main() {
 	// Create a test configuration
 	config := &traefik_rolexpert_plugin.Config{
-		ClientId:     "4dc78059-b61e-4ddc-a8db-f2c53222acf1",
-		ClientSecret: "UQGIxVH8fCwAkMyyO2ZSvVevUi4eJWvQ",
-		RoleXpertUrl: "http://localhost:8083/internal", // 🔥 Mocked RoleXpert service
+		RoleXpertUrl: "http://localhost:8083", // 🔥 Mocked RoleXpert service
 		CacheTTL:     300,
 		Whitelist:    "/**",                      // Allow these paths
 		Blocklist:    "GET:/admin,DELETE:/users", // Block these paths (takes precedence)

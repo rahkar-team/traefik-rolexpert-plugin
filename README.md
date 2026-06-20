@@ -64,8 +64,6 @@ http:
     roles-check:
       plugin:
         rolexpert:
-          clientId: "ClientIdFake"
-          clientSecret: "ClientSecretFake"
           roleXpertUrl: "http://rolexpert:8080"
           cacheTTL: 300  # Cache whitelist for 5 minutes
           whitelist: "GET:/test,/test1"
@@ -113,8 +111,6 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.my-service.rule=Host(`example.com`)"
       - "traefik.http.routers.my-service.middlewares=rolexpert-auth"
-      - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.clientId={clientId}"
-      - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.clientSecret={clientSecret}"
       - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.roleXpertUrl=http://rolexpert:8080"
       - "traefik.http.middlewares.{my-service}-rolexpert.plugin.rolexpert.whitelist=/test,POST:/create,/users/**"
 ```
@@ -132,8 +128,6 @@ If you are using Traefik with **Swarm mode**, add these labels to your Traefik c
 
 ```yaml
   labels:
-    - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.clientId=treafik"
-    - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.clientSecret=Secret"
     - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.roleXpertUrl=http://rolexpert-url"
     - "traefik.http.middlewares.rolexpert-auth.plugin.rolexpert.cacheTTL=300"
 ```
@@ -150,8 +144,6 @@ If you are using Traefik with **Swarm mode**, add these labels to your Traefik c
 
 | Key                | Type   | Description                                                                           |
 |--------------------|--------|---------------------------------------------------------------------------------------|
-| `clientId`         | string | Client ID for authentication.                                                         |
-| `clientSecret`     | string | Client secret for authentication.                                                     |
 | `roleXpertUrl` | string | The base URL of your RoleXpert service.                                               |
 | `cacheTTL`         | int    | How long (in seconds) to cache the whitelist. Default is `300` (5 minutes). |
 | `whitelist`        | string | Comma-separated list of globally whitelisted paths and methods.                             |
@@ -167,8 +159,6 @@ http:
     roles-check:
       plugin:
         rolexpert:
-          clientId: "ClientIdFake"
-          clientSecret: "ClientSecretFake"
           roleXpertUrl: "http://rolexpert:8080"
           cacheTTL: 300
           whitelist: "/**"                      # Allow all paths to bypass auth

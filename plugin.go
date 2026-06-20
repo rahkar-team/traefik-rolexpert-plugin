@@ -38,8 +38,6 @@ type ErrorDetail struct {
 
 // Config defines the middleware configuration.
 type Config struct {
-	ClientId     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
 	RoleXpertUrl string `json:"roleXpertUrl"`
 	CacheTTL     int    `json:"cacheTTL"`  // Cache expiration in seconds
 	Whitelist    string `json:"whitelist"` // Plugin-defined whitelist
@@ -91,11 +89,7 @@ func sendJSONError(rw http.ResponseWriter, statusCode int, errorCode, message st
 func New(_ context.Context, next http.Handler, cfg *Config, name string) (http.Handler, error) {
 	fmt.Printf("Plugin %s initialized", name)
 
-	client := NewClient(
-		cfg.ClientId,
-		cfg.ClientSecret,
-		cfg.RoleXpertUrl,
-	)
+	client := NewClient(cfg.RoleXpertUrl)
 	fmt.Printf("Plugin %s http-client initilized with %s", name, cfg.RoleXpertUrl)
 
 	var wl []string
